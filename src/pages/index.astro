@@ -1,53 +1,360 @@
 ---
-import { listMessages } from "../lib/db";
-import "../styles.css";
+import App from "../layouts/App.astro";
+import { CURRENT_SESSION, loadCatalogue, currentStudent, loadStudentState } from "../lib/db";
+import { classLabel, clashesWithin, eligibility, unitsOf } from "../lib/enrolment";
+import { search } from "../lib/search";
 
-const messages = listMessages();
+// The whole job on one page. The system this replaces splits searching,
+// choosing, checking and confirming across separate slow loads; here the
+// catalogue, the student's load and every rule that could reject an action
+// are answered from the same request.
+
+const params = Astro.url.searchParams;
+const query = params.get("q") ?? "";
+const filters = {
+  career: params.get("career") ?? "any",
+  level: params.get("level") ?? "any",
+  eligibleOnly: params.get("eligibleOnly") === "on",
+};
+
+const catalogue = loadCatalogue();
+const student = currentStudent();
+const state = student ? loadStudentState(student, catalogue) : undefined;
+
+const held = state ? unitsOf(state.enrolled) : 0;
+const cap = student?.unitCap ?? 0;
+const fill = cap > 0 ? Math.min(100, Math.round((held / cap) * 100)) : 0;
+const clashes = state ? clashesWithin(state.enrolled) : [];
+
+const hits = search(catalogue, query, filters).map((hit) => ({
+  ...hit,
+  verdict: state ? eligibility(hit.course, state) : undefined,
+}));
+const shown = filters.eligibleOnly ? hits.filter((hit) => hit.verdict?.allowed) : hits;
+
+// The outcome of the last write, carried back through the redirect so the
+// flow works with no JavaScript. Every message names the specific thing that
+// caused it: "invalid selection" is the failure mode being replaced.
+const result = params.get("result");
+const resultCourse = params.get("course") ?? "";
+const NOTICES: Record<string, string> = {
+  enrolled: `Added ${resultCourse} to your enrolment.`,
+  dropped: `Removed ${resultCourse} from your enrolment.`,
+  "unknown-course": `Could not find ${resultCourse} in this session's catalogue.`,
+};
+const blockedVerdict =
+  result && !NOTICES[result]
+    ? hits.find((hit) => hit.course.code === resultCourse)?.verdict
+    : undefined;
+const notice = result
+  ? (NOTICES[result] ??
+    (blockedVerdict && !blockedVerdict.allowed ? blockedVerdict.blocker.message : undefined) ??
+    `Could not add ${resultCourse}.`)
+  : "";
+const noticeOk = result === "enrolled" || result === "dropped";
+
+/** The search state to carry through any form POST, so acting on a result
+ *  never throws away the query that found it. */
+const carried = { q: query, career: filters.career, level: filters.level };
+const careerName = (career: string) => (career === "UGRD" ? "Undergraduate" : "Graduate");
 ---
 
-<!doctype html>
-<html lang="en-AU">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>COMP4020 prototype</title>
-  </head>
-  <body>
-    <nav aria-label="site">
-      <a href="/">Guestbook</a>
-      <a href="/readme/">About</a>
-    </nav>
-    <main>
-      <h1>Guestbook</h1>
-      <p>
-        A minimal full-stack starter: messages live in SQLite on the machine's
-        volume (state survives a reload and a redeploy), and new messages
-        appear in every open tab over a server-sent-events stream — open this
-        page twice and sign it in one. Replace all of this with your own
-        prototype.
+<App
+  title="Add courses | Enrolment"
+  description="A one page replacement for the ANU flow that adds a course to your enrolment."
+  active="enrol"
+  crumbs={[{ label: "Enrolment", href: "/" }, { label: CURRENT_SESSION }, { label: "Add courses" }]}
+>
+  <div class="page-head">
+    <div>
+      <p class="eyebrow">{CURRENT_SESSION} enrolment</p>
+      <h1>Add courses</h1>
+      <p class="lede">
+        Search the catalogue and add a course in one step. Every rule that could stop you
+        is shown on the result before you click it, with the reason.
       </p>
-      <form method="post" action="/api/messages">
-        <label for="body">Leave a message</label>
-        <input id="body" name="body" required maxlength="500" />
-        <button>Sign</button>
+    </div>
+  </div>
+
+  {
+    result && (
+      <p class={`alert ${noticeOk ? "alert-ok" : "alert-blocked"}`} role="status">
+        <span class="alert-tag">{noticeOk ? "Done" : "Blocked"}</span>
+        <span>{notice}</span>
+      </p>
+    )
+  }
+
+  <div class="columns">
+    <section class="card" aria-labelledby="find-heading">
+      <div class="card-head">
+        <h2 id="find-heading">Find a course</h2>
+      </div>
+
+      <form id="search-form" class="toolbar" method="get" action="/">
+        <div class="field field-search">
+          <label for="q">Search the catalogue</label>
+          <div class="search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="11" cy="11" r="6.5"></circle>
+              <path d="m20 20-4.2-4.2"></path>
+            </svg>
+            <input
+              id="q"
+              name="q"
+              type="search"
+              value={query}
+              autocomplete="off"
+              placeholder="Code, title, topic or convenor"
+            />
+          </div>
+        </div>
+        <div class="field">
+          <label for="career">Career</label>
+          <select id="career" name="career">
+            <option value="any" selected={filters.career === "any"}>Any</option>
+            <option value="UGRD" selected={filters.career === "UGRD"}>Undergraduate</option>
+            <option value="PGRD" selected={filters.career === "PGRD"}>Graduate</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="level">Level</label>
+          <select id="level" name="level">
+            <option value="any" selected={filters.level === "any"}>Any</option>
+            {
+              ["1", "2", "3", "4", "6", "8"].map((level) => (
+                <option value={level} selected={filters.level === level}>
+                  {level}000
+                </option>
+              ))
+            }
+          </select>
+        </div>
+        <div class="field field-check">
+          <input
+            id="eligibleOnly"
+            name="eligibleOnly"
+            type="checkbox"
+            checked={filters.eligibleOnly}
+          />
+          <label for="eligibleOnly">Only courses I can add</label>
+        </div>
+        <button class="btn btn-primary">Search</button>
       </form>
-      <ul id="messages">
-        {messages.map((message) => <li>{message.body}</li>)}
-      </ul>
-    </main>
-    <script>
-      // The live half of the demo: subscribe to the SSE stream and prepend
-      // messages as they arrive. The form itself needs none of this — its
-      // POST + redirect re-renders the submitting tab from SQLite; this
-      // stream is how every other tab finds out.
-      const list = document.querySelector("#messages");
-      const source = new EventSource("/api/events");
-      source.addEventListener("message", (event) => {
-        const message = JSON.parse(event.data);
-        const item = document.createElement("li");
-        item.textContent = message.body;
-        list?.prepend(item);
+
+      <div id="results">
+        <p class="list-meta" role="status">
+          <strong>{shown.length}</strong> {shown.length === 1 ? "course" : "courses"}
+          {query ? ` matching "${query}"` : " in the catalogue"}
+        </p>
+
+        {
+          shown.length === 0 ? (
+            <p class="empty">
+              Nothing matched. Every word you type has to match a code, a title, a
+              description or a convenor.
+            </p>
+          ) : (
+            <ul class="course-list">
+              {shown.map(({ course, matched, verdict }) => {
+                const isHeld = !verdict?.allowed && verdict?.blocker.code === "already-enrolled";
+                const isBlocked = verdict && !verdict.allowed && !isHeld;
+                return (
+                  <li class={`course-row${isBlocked ? " is-blocked" : ""}`} data-code={course.code}>
+                    <div class="course-main">
+                      <a class="course-link" href={`/courses/${course.code}/`}>
+                        <span class="code">{course.code}</span>
+                        <span class="title">{course.title}</span>
+                      </a>
+                      <ul class="facts">
+                        <li>{course.units} units</li>
+                        <li>{careerName(course.career)}</li>
+                        <li>{course.mode}</li>
+                        <li>{course.convenor}</li>
+                      </ul>
+                      <ul class="sessions">
+                        {course.classes.map((session) => (
+                          <li>
+                            {classLabel(session)}, {session.location}
+                          </li>
+                        ))}
+                      </ul>
+                      {matched.length > 0 && (
+                        <p class="matched">Matched on {matched.join(" and ")}</p>
+                      )}
+                      {isBlocked && (
+                        <p class="reason" data-blocker={verdict.blocker.code}>
+                          {verdict.blocker.message}
+                        </p>
+                      )}
+                    </div>
+
+                    <div class="course-side">
+                      <p class="seats">
+                        <strong>{verdict ? verdict.seatsLeft : course.quota}</strong> of{" "}
+                        {course.quota} places left
+                      </p>
+                      {verdict?.allowed ? (
+                        <form method="post" action="/api/enrol">
+                          <input type="hidden" name="code" value={course.code} />
+                          <input type="hidden" name="q" value={carried.q} />
+                          <input type="hidden" name="career" value={carried.career} />
+                          <input type="hidden" name="level" value={carried.level} />
+                          <button class="btn btn-primary">
+                            Enrol<span class="visually-hidden"> in {course.code}</span>
+                          </button>
+                        </form>
+                      ) : isHeld ? (
+                        <form method="post" action="/api/drop">
+                          <input type="hidden" name="code" value={course.code} />
+                          <input type="hidden" name="q" value={carried.q} />
+                          <input type="hidden" name="career" value={carried.career} />
+                          <input type="hidden" name="level" value={carried.level} />
+                          <span class="pill pill-held">Enrolled</span>
+                          <button class="btn btn-secondary btn-small">
+                            Drop<span class="visually-hidden"> {course.code}</span>
+                          </button>
+                        </form>
+                      ) : (
+                        <span class="pill pill-blocked">Blocked</span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )
+        }
+      </div>
+    </section>
+
+    <section class="card" id="enrolment" aria-labelledby="load-heading">
+      <div class="card-head">
+        <h2 id="load-heading">Your enrolment</h2>
+      </div>
+      <div class="card-body">
+        <div class="person">
+          <p class="person-name">{student?.name}</p>
+          <p class="person-meta">
+            {student?.uid}. {student?.program}.
+          </p>
+        </div>
+
+        <div class="load" data-held={held} data-cap={cap}>
+          <p class="load-figure">
+            <strong>{held}</strong> of {cap} units
+          </p>
+          <div class="meter" aria-hidden="true">
+            <span style={`width: ${fill}%`}></span>
+          </div>
+          <p class="load-caption">
+            {state?.enrolled.length ?? 0}{" "}
+            {state?.enrolled.length === 1 ? "course" : "courses"} held for {CURRENT_SESSION}
+          </p>
+        </div>
+
+        {
+          clashes.length > 0 && (
+            <ul class="clash-list">
+              {clashes.map((clash) => (
+                <li>
+                  {clash.a.code} and {clash.b.code} collide: {clash.label}.
+                </li>
+              ))}
+            </ul>
+          )
+        }
+
+        {
+          state && state.enrolled.length === 0 ? (
+            <p class="empty">Nothing yet. Add a course from the list.</p>
+          ) : (
+            <ul class="held-list">
+              {state?.enrolled.map((course) => (
+                <li>
+                  <div class="held-main">
+                    <a href={`/courses/${course.code}/`}>
+                      <span class="code">{course.code}</span>
+                      <span class="title">{course.title}</span>
+                    </a>
+                    <ul class="sessions">
+                      {course.classes.map((session) => (
+                        <li>{classLabel(session)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <form method="post" action="/api/drop">
+                    <input type="hidden" name="code" value={course.code} />
+                    <input type="hidden" name="q" value={carried.q} />
+                    <input type="hidden" name="career" value={carried.career} />
+                    <input type="hidden" name="level" value={carried.level} />
+                    <button class="btn btn-secondary btn-small">
+                      Drop<span class="visually-hidden"> {course.code}</span>
+                    </button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          )
+        }
+
+        {
+          state && state.completedCodes.length > 0 && (
+            <div class="completed">
+              <p class="completed-label">Completed</p>
+              <p>{state.completedCodes.join(", ")}</p>
+            </div>
+          )
+        }
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // Progressive enhancement, and nothing more. The form above is a plain
+    // GET form that works on its own; this makes it answer as you type by
+    // asking the server for the same page and swapping in its results. The
+    // server stays the only thing that knows how a result renders, so the
+    // typed-into version and the reloaded version can never disagree.
+    const form = document.querySelector<HTMLFormElement>("#search-form");
+    const results = document.querySelector<HTMLElement>("#results");
+
+    if (form && results) {
+      let latest = 0;
+      let timer: ReturnType<typeof setTimeout>;
+
+      const refresh = async (): Promise<void> => {
+        const params = new URLSearchParams(
+          [...new FormData(form)].map(([key, value]) => [key, String(value)]),
+        );
+        const mine = ++latest;
+        try {
+          const res = await fetch(`/?${params}`);
+          if (!res.ok || mine !== latest) return;
+          const next = new DOMParser()
+            .parseFromString(await res.text(), "text/html")
+            .querySelector("#results");
+          if (next) results.innerHTML = next.innerHTML;
+          history.replaceState(null, "", params.size > 0 ? `/?${params}` : "/");
+        } catch {
+          // offline or the server went away: the page keeps what it has,
+          // and the plain form still works on the next submit
+        }
+      };
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void refresh();
       });
-    </script>
-  </body>
-</html>
+      form.addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => void refresh(), 120);
+      });
+
+      // Places are the contested part of enrolment, so a seat count that
+      // was true at render time is exactly the figure that sends you to a
+      // full course. When anyone's enrolment changes, re-ask.
+      new EventSource("/api/events").addEventListener("change", () => void refresh());
+    }
+  </script>
+</App>

@@ -1,0 +1,125 @@
+---
+import { CURRENT_SESSION, currentStudent } from "../lib/db";
+import "../styles.css";
+
+// The application shell every page sits in. The header follows the shape of
+// a university site's masthead: a white band with the wordmark between two
+// gold rules, a gold chevron and the section title in capitals, small utility
+// text at the right, then a black navigation bar with a home icon, the
+// sections right aligned, and search. The wordmark is this app's own, never a
+// university crest or name: it is a prototype, not an ANU service.
+//
+// The shell owns no heading. Each page renders its own single <h1>, which is
+// what the invariants count.
+
+interface Props {
+  title: string;
+  description?: string;
+  active: "enrol" | "about" | "none";
+  crumbs: { label: string; href?: string }[];
+}
+
+const { title, description, active, crumbs } = Astro.props;
+const student = currentStudent();
+---
+
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&display=swap"
+    />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="masthead">
+        <div class="masthead-inner">
+          <a class="brand" href="/">
+            <span class="brand-mark" aria-hidden="true">E</span>
+            <span class="brand-name">Enrolment<br />Console</span>
+          </a>
+          <svg class="chevron" viewBox="0 0 12 24" aria-hidden="true" focusable="false">
+            <path d="M2 2l8 10-8 10"></path>
+          </svg>
+          <p class="site-title">Course enrolment {CURRENT_SESSION}</p>
+          {
+            student && (
+              <p class="utility">
+                <span>{student.name}</span>
+                <span>{student.uid}</span>
+              </p>
+            )
+          }
+        </div>
+      </div>
+
+      <nav class="navbar" aria-label="Main">
+        <ul class="navbar-inner">
+          <li>
+            <a class="nav-icon" href="/">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 3.2 2.5 11.4h2.8V20.5h5.2v-5.7h3v5.7h5.2v-9.1h2.8z"></path>
+              </svg>
+              <span class="visually-hidden">Home</span>
+            </a>
+          </li>
+          <li>
+            <a href="/" aria-current={active === "enrol" ? "page" : undefined}>Add courses</a>
+          </li>
+          <li><a href="/#enrolment">My enrolment</a></li>
+          <li>
+            <a href="/readme/" aria-current={active === "about" ? "page" : undefined}>About</a>
+          </li>
+          <li>
+            <a class="nav-icon" href="/#q">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="10.5" cy="10.5" r="6.5"></circle>
+                <path d="m20 20-4.8-4.8"></path>
+              </svg>
+              <span class="visually-hidden">Search the catalogue</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </header>
+
+    <div class="subbar">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <ol>
+          {
+            crumbs.map((crumb, index) => (
+              <li>
+                {crumb.href && index < crumbs.length - 1 ? (
+                  <a href={crumb.href}>{crumb.label}</a>
+                ) : (
+                  <span aria-current={index === crumbs.length - 1 ? "page" : undefined}>
+                    {crumb.label}
+                  </span>
+                )}
+              </li>
+            ))
+          }
+        </ol>
+      </nav>
+    </div>
+
+    <main id="content" class="content">
+      <slot />
+    </main>
+
+    <footer class="footer">
+      <p>
+        A prototype built for COMP4020, not an ANU service. Course codes, titles and unit
+        values follow real ANU courses; class times, rooms, quotas, convenors and the student
+        record are invented, and nothing here changes a real enrolment.
+      </p>
+    </footer>
+  </body>
+</html>

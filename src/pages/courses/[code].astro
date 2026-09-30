@@ -1,0 +1,192 @@
+---
+import App from "../../layouts/App.astro";
+import {
+  CURRENT_SESSION,
+  courseByCode,
+  currentStudent,
+  loadCatalogue,
+  loadStudentState,
+  requiredBy,
+} from "../../lib/db";
+import { clock, eligibility } from "../../lib/enrolment";
+
+// One course, with the two questions the real system makes you answer by
+// hand: what does this require that I have not done, and what requires it.
+// Both are one query each once the prerequisite edges are in the database.
+
+const catalogue = loadCatalogue();
+const course = courseByCode(Astro.params.code ?? "", catalogue);
+
+if (!course) {
+  return new Response("No such course in this session's catalogue.", {
+    status: 404,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+const student = currentStudent();
+const state = student ? loadStudentState(student, catalogue) : undefined;
+const verdict = state ? eligibility(course, state) : undefined;
+const nextCourses = requiredBy(course.code, catalogue);
+const DAYS = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const isHeld = !verdict?.allowed && verdict?.blocker.code === "already-enrolled";
+---
+
+<App
+  title={`${course.code} ${course.title} | Enrolment`}
+  description={course.description}
+  active="none"
+  crumbs={[
+    { label: "Enrolment", href: "/" },
+    { label: "Add courses", href: "/" },
+    { label: course.code },
+  ]}
+>
+  <div class="page-head">
+    <div>
+      <p class="eyebrow">{course.code}</p>
+      <h1>
+        <span class="visually-hidden">{course.code} </span>{course.title}
+      </h1>
+      <p class="lede">{course.description}</p>
+    </div>
+  </div>
+
+  <div class="columns">
+    <div class="stack">
+      <section class="card" aria-labelledby="details-heading">
+        <div class="card-head">
+          <h2 id="details-heading">Course details</h2>
+        </div>
+        <dl class="details">
+          <div><dt>Units</dt><dd>{course.units}</dd></div>
+          <div>
+            <dt>Career</dt><dd>{course.career === "UGRD" ? "Undergraduate" : "Graduate"}</dd>
+          </div>
+          <div><dt>Mode</dt><dd>{course.mode}</dd></div>
+          <div><dt>Session</dt><dd>{CURRENT_SESSION}</dd></div>
+          <div><dt>Convenor</dt><dd>{course.convenor}</dd></div>
+          <div>
+            <dt>Places left</dt>
+            <dd>{verdict ? verdict.seatsLeft : course.quota} of {course.quota}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="classes-heading">
+        <div class="card-head">
+          <h2 id="classes-heading">Class times</h2>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col">Activity</th>
+              <th scope="col">Day</th>
+              <th scope="col">Time</th>
+              <th scope="col">Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            {
+              course.classes.map((session) => (
+                <tr>
+                  <td>{session.kind}</td>
+                  <td>{DAYS[session.day]}</td>
+                  <td>
+                    {clock(session.startMin)} to {clock(session.endMin)}
+                  </td>
+                  <td>{session.location}</td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="card" aria-labelledby="action-heading">
+        <div class="card-head">
+          <h2 id="action-heading">Enrolment</h2>
+        </div>
+        <div class="card-body">
+          {
+            verdict?.allowed ? (
+              <form method="post" action="/api/enrol">
+                <input type="hidden" name="code" value={course.code} />
+                <p class="action-note">You can add this course.</p>
+                <button class="btn btn-primary btn-block">
+                  Enrol<span class="visually-hidden"> in {course.code}</span>
+                </button>
+              </form>
+            ) : isHeld ? (
+              <form method="post" action="/api/drop">
+                <input type="hidden" name="code" value={course.code} />
+                <p class="action-note">
+                  <span class="pill pill-held">Enrolled</span> This course is in your
+                  enrolment.
+                </p>
+                <button class="btn btn-secondary btn-block">
+                  Drop<span class="visually-hidden"> {course.code}</span>
+                </button>
+              </form>
+            ) : (
+              <p class="action-note">
+                <span class="pill pill-blocked">Blocked</span>{" "}
+                <span class="reason" data-blocker={verdict?.blocker.code}>
+                  {verdict && !verdict.allowed ? verdict.blocker.message : ""}
+                </span>
+              </p>
+            )
+          }
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="requires-heading">
+        <div class="card-head">
+          <h2 id="requires-heading">Requirements</h2>
+        </div>
+        <div class="card-body">
+          {
+            course.prereqs.length === 0 ? (
+              <p class="empty">Nothing is required before this course.</p>
+            ) : (
+              <ul class="link-list">
+                {course.prereqs.map((code) => {
+                  const done = state?.completedCodes.includes(code) ?? false;
+                  return (
+                    <li>
+                      <a href={`/courses/${code}/`} class="code">
+                        {code}
+                      </a>
+                      <span class={`pill ${done ? "pill-held" : "pill-blocked"}`}>
+                        {done ? "Completed" : "Not completed"}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )
+          }
+
+          <h3>Required by</h3>
+          {
+            nextCourses.length === 0 ? (
+              <p class="empty">No course in this session's catalogue requires it.</p>
+            ) : (
+              <ul class="link-list">
+                {nextCourses.map((next) => (
+                  <li>
+                    <a href={`/courses/${next.code}/`}>
+                      <span class="code">{next.code}</span> {next.title}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )
+          }
+        </div>
+      </section>
+    </div>
+  </div>
+</App>

@@ -1,14 +1,17 @@
 import type { APIRoute } from "astro";
-import type { Message } from "../../lib/db";
-import { bus } from "../../lib/events";
+import { type Change, bus } from "../../lib/events";
 
 // The minimal server-sent-events (SSE) pattern: a long-lived streaming
 // response the browser consumes with `new EventSource("/api/events")`.
 // SSE is one-directional (server → browser) and plain HTTP, which makes it
-// the simplest live channel that works everywhere — reach for WebSockets
-// only when the client needs to push over the same connection.
+// the simplest live channel that works everywhere.
+//
+// Here it carries one thing: somebody's enrolment changed a course's seat
+// count. Places in a small course are the part of enrolment that is genuinely
+// contested, and a seats remaining figure that was true when the page
+// rendered is the figure that sends you to a full course.
 export const GET: APIRoute = () => {
-  let onMessage: (message: Message) => void;
+  let onChange: (change: Change) => void;
   let heartbeat: ReturnType<typeof setInterval>;
 
   const stream = new ReadableStream<string>({
@@ -18,14 +21,14 @@ export const GET: APIRoute = () => {
       // connection as idle
       controller.enqueue(": connected\n\n");
       heartbeat = setInterval(() => controller.enqueue(": ping\n\n"), 30_000);
-      onMessage = (message) => {
-        controller.enqueue(`data: ${JSON.stringify(message)}\n\n`);
+      onChange = (change) => {
+        controller.enqueue(`event: change\ndata: ${JSON.stringify(change)}\n\n`);
       };
-      bus.on("message", onMessage);
+      bus.on("change", onChange);
     },
     cancel() {
       clearInterval(heartbeat);
-      bus.off("message", onMessage);
+      bus.off("change", onChange);
     },
   });
 
